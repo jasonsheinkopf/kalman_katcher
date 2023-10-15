@@ -11,6 +11,7 @@ import pickle
 import math
 import threading
 import sys
+from kalman_filter import Catcher
 
 class Target:
     def __init__(self, id, x, y):
@@ -18,6 +19,12 @@ class Target:
         self.x = x
         self.y = y
         self.threshold = 10
+        # Kalman filter belief covariance matrix
+        self.P = None
+        # Kalman filter belief matrix
+        self.kfx = None
+        # list of observations
+        self.observations = []
 
     def _repr_(self):
         return f'{self.id}: ({self.x}, {self.y})'
@@ -318,6 +325,9 @@ new_targets = []
 
 # sequential id for targets
 next_id = 0
+
+# create catcher object
+catcher = Catcher
 
 try:
     for frame in camera.capture_continuous(rawCapture, format='bgr', use_video_port=True):
