@@ -1,0 +1,518 @@
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
+import cv2
+import numpy as np
+from rpi_ws281x import Adafruit_NeoPixel, Color
+from time import sleep
+import RPi.GPIO as GPIO
+import pigpio
+import pickle
+import math
+import threading
+import sys
+
+class Target:
+    def __init__(self, id, x, y):
+        self.id = id
+        self.x = x
+        self.y = y
+        self.threshold = 10
+
+    def _repr_(self):
+        return f'{self.id}: ({self.x}, {self.y})'
+    
+    def is_tracking(self, circle_x, circle_y):
+        # subtraction = circle_x - self.x
+        # subtractiony = circle_y - self.y
+        distance = math.sqrt((int(circle_x) - int(self.x))**2 + (int(circle_y) - int(self.y))**2)
+        # print(f'Distance: {distance}')
+
+        return True if distance < self.threshold else False
+    
+    def find_distance(self, circle):
+        return math.sqrt((int(circle[0]) - int(self.x))**2 + (int(circle[0]) - int(self.y))**2)
+
+def servo_dot(servo_box_l, servo_box_r):
+    global dot_x
+    x1, y1 = servo_box_l
+    x2, y2 = servo_box_r
+    # sample pixels along line
+    line_values = []
+
+    # create sample points along servo path
+    for t in np.linspace(0, 1, 100):
+        x = int(x1 + t * (x2 - x1))
+        y = int(y1 + t * (y2 - y1))
+        line_values.append(image[y, x])
+
+    # points brighter than threshold are where the servo is
+    threshold = 200
+
+    # find indices of bright pixels
+    bright_indices = np.where(np.array(line_values) > threshold)
+
+    # if there are no bright regions
+    if bright_indices[0].size == 0:
+        print("Servo not in sight")
+    else:
+        # find centerpoint
+        center_index = np.array(bright_indices[0]).mean().astype(int)
+        x_center = int(x1 + np.linspace(0, 1, 100)[center_index] * (x2 - x1))
+        y_center = int(y1 + np.linspace(0, 1, 100)[center_index] * (y2 - y1))
+
+        # Draw a circle at the center point
+        cv2.circle(image, (x_center, y_center), 15, (0, 0, 255), -1)
+        # print(f'x: {x_center}, y: {y_center}')
+
+        dot_x = x_center
+
+# LED config
+LED_COUNT = 12
+LED_PIN = 21
+LED_FREQ_HZ = 800000
+LED_DMA = 10
+LED_BRIGHTNESS = 255
+LED_INVERT = False
+
+def save_values(dict):
+    # Save the dictionary to a Pickle file
+    with open('memory.pkl', 'wb') as file:
+        pickle.dump(dict, file)
+
+def calibrate(gray):
+    # All the 6 methods for comparison in a list
+    methods = [cv2.TM_CCOEFF, cv2.TM_CCOEFF_NORMED, cv2.TM_CCORR,
+    cv2.TM_CCORR_NORMED, cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]
+
+    chosen_method = methods[1]
+
+    # distance for bounding box from marker
+    edge = 5
+
+    img2 = gray.copy()
+
+    # bottom left
+    result = cv2.matchTemplate(img2, bl_template, chosen_method)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+    location = max_loc
+    bottom_left = (location[0] - edge, location[1] + bl_h)
+    # cv2.rectangle(image, location, bottom_left, 255, 5)
+    # cv2.circle(image, bottom_left, 5, (0, 255, 0), 2)
+
+    # top left
+    result = cv2.matchTemplate(img2, tl_template, chosen_method)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+    location = max_loc  
+    top_left = (location[0] - edge, location[1])
+    # cv2.rectangle(image, location, top_left, 255, 5)
+    # cv2.circle(image, top_left, 5, (0, 255, 0), 2)
+
+    # top right
+    result = cv2.matchTemplate(img2, tr_template, chosen_method)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+    location = max_loc
+    top_right = (location[0] + tr_w + edge, location[1])
+    # cv2.rectangle(image, location, top_right, 255, 5)
+    # cv2.circle(image, top_left, 5, (0, 255, 0), 2)
+
+    # bottom right
+    result = cv2.matchTemplate(img2, br_template, chosen_method)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+    location = max_loc  
+    bottom_right = (location[0] + br_w + edge, location[1] + br_h)
+    # cv2.rectangle(image, location, bottom_right, 255, 5)
+    # cv2.circle(image, bottom_right, 5, (0, 255, 0), 2)
+
+    # Define a region of interest (ROI) based on the bounding box
+    roi = gray[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]]
+
+    # servo edge
+    servo_box_l = (bottom_left[0], bottom_left[1] + servo_line_offset)
+    servo_box_r = (bottom_right[0], bottom_right[1] + servo_line_offset)
+
+    # world height
+    world_height = math.sqrt((int(top_left[0]) - int(bottom_left[0]))**2 + (int(top_left[1]) - int(bottom_left[1]))**2)
+    world_width = math.sqrt((int(top_left[0]) - int(top_right[0]))**2 + (int(top_left[1]) - int(top_right[1]))**2)
+    world_aspect_ratio = world_width / world_height
+
+    # source points for transformation matrix
+    source_points = [top_left, servo_box_r, top_right, servo_box_l]
+
+    # new height and width
+    grid_h = 100
+    grid_w = grid_h * world_aspect_ratio
+
+    # grid points for mapping
+    grid_points = [(0, grid_h), (grid_w, 0), (grid_w, grid_h), (0, 0)]
+
+    # Create a perspective transformation matrix
+    trans_matrix = cv2.getPerspectiveTransform(np.float32(source_points), np.float32(grid_points))
+
+    return top_left, bottom_right, top_right, bottom_left, roi, servo_box_l, servo_box_r, trans_matrix
+
+# # create neopixel ring
+# ring = Adafruit_NeoPixel(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS)
+# ring.begin()
+
+# white = Color(255, 255, 255)
+# for i in range(LED_COUNT):
+#     ring.setPixelColor(i, white)
+#     ring.show()
+
+# set exit event to end thread
+exit_event = threading.Event()
+
+count = 0
+
+# initial servo position
+min_pos = 700
+max_pos = 2300
+goal_pos = min_pos
+servo_line_offset = 20
+
+# global variable for current target
+current_target = None
+
+# create lookup dict to convert dot_x to goal_pos
+try:
+    # Try to load the Pickle file
+    with open('lookup.pkl', 'rb') as file:
+        lookup_dict = pickle.load(file)
+except FileNotFoundError:
+    # If the file doesn't exist, create an empty dictionary
+    lookup_dict = {}
+
+# servo dot location
+dot_x = 0
+
+# pgpio setup
+servo = 13
+pwm = pigpio.pi()
+pwm.set_mode(servo, pigpio.OUTPUT)
+pwm.set_PWM_frequency( servo, 50 )
+
+def transform_coordinates(coord, transformation_matrix):
+    # Create a list of coordinates to be transformed
+    coordinates = np.array([[[coord[0], coord[1]]]], dtype=np.float32)
+
+    # Use cv2.perspectiveTransform to transform the coordinates
+    new_coordinates = cv2.perspectiveTransform(coordinates, transformation_matrix)
+
+    # Extract and return the transformed coordinate
+    new_coord = new_coordinates[0][0]
+    return (new_coord[0], new_coord[1])
+
+def choose_target(new_targets, trans_matrix):
+    global current_target
+
+    if len(new_targets) != 0:
+        current_target = new_targets[0]
+    else:
+        current_target = None
+
+    return current_target
+
+def go_to_position(position):
+    # print(f'Going to: {position}')
+    pwm.set_servo_pulsewidth(servo, position) ;
+    time.sleep(.3)
+
+def servo_thread_fn():
+    global goal_pos, lookup_dict, dot_x
+    # delay to let camera start
+    time.sleep(3)
+
+    # change this flag to True if you already have a lookup table
+    lookup_is_saved = True
+    
+    while not exit_event.is_set():
+        if lookup_is_saved == False:
+            while goal_pos < max_pos:
+                # delay
+                time.sleep(.1)
+                # record goal position for given dot_x
+                print(f'Adding {dot_x}: {goal_pos}')
+                lookup_dict[dot_x] = goal_pos
+                # delay for movement
+                # time.sleep(.1)
+                # move servo
+                goal_pos += 10
+            # Save the dictionary to a pickle file
+            with open('lookup.pkl', 'wb') as file:
+                pickle.dump(lookup_dict, file)
+            print('Lookup table pickled')
+            lookup_is_saved = True
+
+        # get current target position
+        if current_target is not None:
+            # x value of the target
+            current_target_x = current_target.x
+            # closest key in the lookup_dict
+            closest_key = min(lookup_dict, key=lambda key: abs(current_target_x - key))
+            # retrieve servo pos
+            goal_pos = lookup_dict[closest_key]
+
+        # send servo to active position
+        go_to_position(goal_pos)
+
+
+# Create a thread for moving the servo
+servo_thread = threading.Thread(target=servo_thread_fn)
+
+# Start the thread
+servo_thread.start()
+
+# set exit event to end thread
+exit_event = threading.Event()
+
+# Define the frame dimensions
+width, height = 300, 480
+
+# Initialize the PiCamera
+camera = PiCamera()
+camera.resolution = (width, height)
+camera.rotation = 90
+camera.framerate = 30
+rawCapture = PiRGBArray(camera, size=(width, height))
+time.sleep(1)
+
+# corner template images
+bl_template = cv2.imread('/home/jasonsheinkopf/Desktop/object_track/BL.jpg', 0).astype('uint8')
+tl_template = cv2.imread('/home/jasonsheinkopf/Desktop/object_track/TL.jpg', 0).astype('uint8')
+br_template = cv2.imread('/home/jasonsheinkopf/Desktop/object_track/BR.jpg', 0).astype('uint8')
+tr_template = cv2.imread('/home/jasonsheinkopf/Desktop/object_track/TR.jpg', 0).astype('uint8')
+
+# corner template sizes
+bl_h, bl_w = bl_template.shape
+tl_h, tl_w = tl_template.shape
+br_h, br_w = br_template.shape
+tr_h, tr_w = tr_template.shape
+
+# Set a threshold for matching
+gamma = .73
+
+# line threshold
+threshold = 800
+
+frame_num = 0
+
+try:
+    # Try to load the Pickle file
+    with open('memory.pkl', 'rb') as file:
+        circle_params = pickle.load(file)
+except FileNotFoundError:
+    # If the file doesn't exist, create an empty dictionary
+    circle_params = {
+    'dp': 1,
+    'minDist': 50,
+    'param1': 50,
+    'param2': 20,
+    'minRadius': 13,
+    'maxRadius': 22
+}
+
+
+# empty list to hold targets
+new_targets = []
+
+# sequential id for targets
+next_id = 0
+
+try:
+    for frame in camera.capture_continuous(rawCapture, format='bgr', use_video_port=True):
+        # list of active target objects
+        targets = new_targets
+
+        # empty new target list
+        new_targets = []
+        
+        # Image processing can be added here
+        image = frame.array
+
+        # convert to gray
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # set key press length
+        key = cv2.waitKey(1) & 0xFF
+
+        # calibrate corners on first frame or key press
+        if frame_num == 0 or key == ord('c'):
+            top_left, bottom_right, top_right, bottom_left, roi, servo_box_l, servo_box_r, trans_matrix = calibrate(gray)   
+            print('Calibrating')
+        
+        # show servo location dot
+        servo_dot(servo_box_l, servo_box_r)
+
+        # draw bounding box
+        cv2.line(image, top_left, top_right, (0, 255, 255), 1)
+        cv2.line(image, top_right, bottom_right, (0, 255, 255), 1)
+        cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
+        cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
+
+        # draw servo line
+        cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
+
+        # Use Hough Circle Transform to detect circles with parameters
+        circles = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            **circle_params
+        )
+
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+
+            circle_list = []
+
+            # remove false circles
+            for circle in circles[0, :]:
+                # append to list if white
+                try:
+                    if gray[circle[1], circle[0]] > 200 and circle[1] < servo_box_l[1]:
+                        circle_list.append(circle)
+                except IndexError:
+                    pass
+            
+            num_targets = len(targets)
+            num_circles = len(circle_list)
+            tar_to_add = num_circles - num_targets
+
+            # print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos}')
+
+            # if there are some targets but more circles
+            if num_targets <= num_circles:
+                # Draw the outer circle
+                [cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2) for circle in circle_list]
+                
+                # iterate over existing targets
+                for target in targets:
+                    # print(f'Targets: {len(targets)} | Circles: {len(circle_list)} | Extra Circ: {tar_to_add}')
+                    # sort circle list by distance from target (closest last)
+                    circle_list.sort(key=lambda circle: target.find_distance(circle), reverse=True)
+                    # pop closest circle
+                    closest_circle = circle_list.pop()
+                    # update target location
+                    target.x, target.y = closest_circle[0], closest_circle[1]
+                    # append updated target to new list
+                    new_targets.append(target)
+                # iterate over remaining circles
+                for circle in circle_list:
+                    # append as new targets
+                    new_targets.append(Target(next_id, circle[0], circle[1]))
+                    # increment id count
+                    next_id += 1
+            elif num_targets > num_circles:
+                # iterate over circles
+                for circle in circle_list:
+                    # sort target list by distance from circle
+                    targets.sort(key=lambda target: target.find_distance(circle), reverse=True)
+                    # for target in targets:
+                    #     print(f'ID: {target.id} | Dist: {target.find_distance(circle)}')
+                    # time.sleep(1)
+                    # pop closest target
+                    closest_target = targets.pop()
+                    # update target location
+                    closest_target.x, closest_target.y = circle[0], circle[1]
+                    # append updated target to new list
+                    new_targets.append(closest_target)
+                    # Draw the outer circle
+                    cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
+
+                # Draw the center of the circle
+                # cv2.circle(image, (center_x, center_y), 2, (0, 0, 255), 3)
+                
+                # Display text
+                # text = f"{center_x}, {center_y})"
+                # cv2.putText(image, text, (center_x - 30, center_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        
+        # print(f'Num Targets: {len(new_targets)}')
+
+        for target in new_targets:
+        # iterate over targets
+            target.tx, target.ty = transform_coordinates((target.x, target.y), trans_matrix)
+            # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
+            # write transformed coordinates by circle
+            trans_string = f'({int(target.tx)}, {int(target.ty)})'
+            cv2.putText(image, trans_string, (target.x, target.y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+            # write screen coordinates
+            cv2.putText(image, str(target.id), (target.x, target.y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+            print(f'{target.id}: {trans_string}')
+
+        # choose best target
+        current_target = choose_target(new_targets, trans_matrix)
+
+        # Uncomment this block if you want to process keyboard input (e.g., press 'q' to exit)
+        if key == ord('q'):
+            exit_event.set()
+            servo_thread.join()
+            cv2.destroyAllWindows()
+            camera.close()
+            break
+        elif key == ord('p'):
+            goal_pos += 50
+            if goal_pos > max_pos:
+                goal_pos = max_pos
+        elif key == ord('l'):
+            goal_pos -= 50
+            if goal_pos < min_pos:
+                goal_pos = min_pos
+        elif key == ord('1'):
+            circle_params['minDist'] += 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('a'):
+            circle_params['minDist'] -= 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('2'):
+            circle_params['param1'] += 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('s'):
+            circle_params['param1'] -= 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('3'):
+            circle_params['param2'] += 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('d'):
+            circle_params['param2'] -= 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('4'):
+            circle_params['minRadius'] += 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('f'):
+            circle_params['minRadius'] -= 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('5'):
+            circle_params['maxRadius'] += 1
+            save_values(circle_params)
+            print(circle_params)
+        elif key == ord('g'):
+            circle_params['maxRadius'] -= 1
+            save_values(circle_params)
+            print(circle_params)
+
+
+        # Display the image in a non-GUI window
+        cv2.imshow('Circle Detection', image)
+
+        rawCapture.truncate(0)
+
+        # increment frame count
+        frame_num += 1
+
+except KeyboardInterrupt:
+    print("Stopping thread and exiting program")
+
+finally:
+    # Signal the servo thread to stop and wait for it to finish
+    exit_event.set()
+    servo_thread.join()
+    cv2.destroyAllWindows()
+    camera.close()
