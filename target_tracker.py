@@ -10,14 +10,15 @@ import pigpio
 import pickle
 import math
 import threading
-import sys
+# import sys
 from kalman_filter import Catcher
 
 class Target:
-    def __init__(self, id, x, y):
+    def __init__(self, id, x, y, r):
         self.id = id
         self.x = x
         self.y = y
+        self.r = r
         self.threshold = 10
         # Kalman filter belief covariance matrix
         self.P = None
@@ -25,20 +26,19 @@ class Target:
         self.kfx = None
         # list of observations
         self.observations = []
+        # list of future points
+        self.future_points = []
 
     def _repr_(self):
         return f'{self.id}: ({self.x}, {self.y})'
     
     def is_tracking(self, circle_x, circle_y):
-        # subtraction = circle_x - self.x
-        # subtractiony = circle_y - self.y
         distance = math.sqrt((int(circle_x) - int(self.x))**2 + (int(circle_y) - int(self.y))**2)
-        # print(f'Distance: {distance}')
 
         return True if distance < self.threshold else False
     
     def find_distance(self, circle):
-        return math.sqrt((int(circle[0]) - int(self.x))**2 + (int(circle[0]) - int(self.y))**2)
+        return math.sqrt((int(circle[0]) - int(self.x))**2 + (int(circle[1]) - int(self.y))**2)
 
 def servo_dot(servo_box_l, servo_box_r):
     global dot_x
@@ -81,6 +81,12 @@ LED_FREQ_HZ = 800000
 LED_DMA = 10
 LED_BRIGHTNESS = 255
 LED_INVERT = False
+
+# create instance of catcher class at 30 fps
+catcher = Catcher(dt=1/30)
+
+# list of colors to draw circles
+colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
 
 def save_values(dict):
     # Save the dictionary to a Pickle file
@@ -214,7 +220,8 @@ def choose_target(new_targets, trans_matrix):
     global current_target
 
     if len(new_targets) != 0:
-        current_target = new_targets[0]
+        # current_target = new_targets[0]
+        current_target = sorted(new_targets, key=lambda target: target.y)[-1]
     else:
         current_target = None
 
@@ -326,8 +333,13 @@ new_targets = []
 # sequential id for targets
 next_id = 0
 
-# create catcher object
-catcher = Catcher
+# number of consecutive frames to constitute a change
+update_threshold = 2
+
+# number of consecutive frames circle count did not match target count
+change_count = 0
+
+max_change_count = 0
 
 try:
     for frame in camera.capture_continuous(rawCapture, format='bgr', use_video_port=True):
@@ -349,6 +361,7 @@ try:
         # calibrate corners on first frame or key press
         if frame_num == 0 or key == ord('c'):
             top_left, bottom_right, top_right, bottom_left, roi, servo_box_l, servo_box_r, trans_matrix = calibrate(gray)   
+            goal_y = int((servo_box_l[1] + servo_box_r[1]) / 2)
             print('Calibrating')
         
         # show servo location dot
@@ -388,66 +401,108 @@ try:
             num_circles = len(circle_list)
             tar_to_add = num_circles - num_targets
 
-            # print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos}')
-
-            # if there are some targets but more circles
-            if num_targets <= num_circles:
-                # Draw the outer circle
-                [cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2) for circle in circle_list]
-                
-                # iterate over existing targets
-                for target in targets:
-                    # print(f'Targets: {len(targets)} | Circles: {len(circle_list)} | Extra Circ: {tar_to_add}')
-                    # sort circle list by distance from target (closest last)
-                    circle_list.sort(key=lambda circle: target.find_distance(circle), reverse=True)
-                    # pop closest circle
-                    closest_circle = circle_list.pop()
-                    # update target location
-                    target.x, target.y = closest_circle[0], closest_circle[1]
-                    # append updated target to new list
-                    new_targets.append(target)
-                # iterate over remaining circles
-                for circle in circle_list:
-                    # append as new targets
-                    new_targets.append(Target(next_id, circle[0], circle[1]))
-                    # increment id count
-                    next_id += 1
-            elif num_targets > num_circles:
-                # iterate over circles
-                for circle in circle_list:
-                    # sort target list by distance from circle
-                    targets.sort(key=lambda target: target.find_distance(circle), reverse=True)
-                    # for target in targets:
-                    #     print(f'ID: {target.id} | Dist: {target.find_distance(circle)}')
-                    # time.sleep(1)
-                    # pop closest target
-                    closest_target = targets.pop()
-                    # update target location
-                    closest_target.x, closest_target.y = circle[0], circle[1]
-                    # append updated target to new list
-                    new_targets.append(closest_target)
+            print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos} | Change Count: {change_count} | Max change Count: {max_change_count}')
+         
+            # check if number of circles changesd
+            if abs(num_targets - num_circles) == 1 and change_count < update_threshold:
+                # pass on current targets
+                new_targets = targets.copy()
+                # set flag to do double check
+                change_count += 1
+                print(f'Circles != Targets {change_count} times in a row')
+                if change_count > max_change_count:
+                    max_change_count = change_count
+            else:
+                # reset change count
+                change_count = 0
+                # if there are some targets but more circles
+                if num_targets <= num_circles:
                     # Draw the outer circle
-                    cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
+                    # [cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2) for circle in circle_list]
+                    
+                    # iterate over existing targets
+                    for target in targets:
+                        # print(f'Targets: {len(targets)} | Circles: {len(circle_list)} | Extra Circ: {tar_to_add}')
+                        # sort circle list by distance from target (closest last)
+                        circle_list.sort(key=lambda circle: target.find_distance(circle), reverse=True)
+                        # pop closest circle
+                        closest_circle = circle_list.pop()
+                        # update target location
+                        target.x, target.y, target.r = closest_circle[0], closest_circle[1], closest_circle[2]
+                        # append updated target to new list
+                        new_targets.append(target)
+                    # iterate over remaining circles
+                    for circle in circle_list:
+                        # append as new targets
+                        new_targets.append(Target(next_id, circle[0], circle[1], circle[2]))
+                        # increment id count
+                        next_id += 1
 
-                # Draw the center of the circle
-                # cv2.circle(image, (center_x, center_y), 2, (0, 0, 255), 3)
-                
-                # Display text
-                # text = f"{center_x}, {center_y})"
-                # cv2.putText(image, text, (center_x - 30, center_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+                elif num_targets > num_circles:
+                    # iterate over circles
+                    for circle in circle_list:
+                        # sort target list by distance from circle
+                        targets.sort(key=lambda target: target.find_distance(circle), reverse=True)
+                        # for target in targets:
+                        #     print(f'ID: {target.id} | Dist: {target.find_distance(circle)}')
+                        # time.sleep(1)
+                        # pop closest target
+                        closest_target = targets.pop()
+                        # update target location
+                        closest_target.x, closest_target.y, closest_target.r = circle[0], circle[1], circle[2]
+                        # append updated target to new list
+                        new_targets.append(closest_target)
+                        # Draw the outer circle
+                        # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
+
+                    # Draw the center of the circle
+                    # cv2.circle(image, (center_x, center_y), 2, (0, 0, 255), 3)
+                    
+                    # Display text
+                    # text = f"{center_x}, {center_y})"
+                    # cv2.putText(image, text, (center_x - 30, center_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+                else:
+                    # if a ball disappeared but you didn't check the next frame, keep all targets
+                    new_targets = targets.copy()
         
         # print(f'Num Targets: {len(new_targets)}')
 
         for target in new_targets:
         # iterate over targets
+            # choose color
+            color = colors[target.id % 5]
+            # draw circle
+            cv2.circle(image, (target.x, target.y), target.r, color, 2)
+            # transform to simple grid
             target.tx, target.ty = transform_coordinates((target.x, target.y), trans_matrix)
             # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
             # write transformed coordinates by circle
             trans_string = f'({int(target.tx)}, {int(target.ty)})'
-            cv2.putText(image, trans_string, (target.x, target.y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            # write screen coordinates
-            cv2.putText(image, str(target.id), (target.x, target.y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
-            print(f'{target.id}: {trans_string}')
+            # add coordinate text
+            cv2.putText(image, trans_string, (target.x - 17, target.y + 15), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 0, 0), 1)
+            # write target number
+            cv2.putText(image, str(target.id), (target.x - 4, target.y + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
+            # print(f'{target.id}: {trans_string}')
+            # append observation to history
+            target.observations.append((target.x, target.y))
+            # update belief and future points with Kalman filter
+            target.kfx, target.P, target.future_points, target.t, target.goal_x = catcher.predict(target=target, goal_y=goal_y)
+            # if the KF has developed a belief
+            if target.kfx is not None:
+                # extract belief state kinematics parameters
+                x, y = int(target.kfx[0].item()), int(target.kfx[1].item())
+                vx, vy = int(target.kfx[2].item()), int(target.kfx[3].item())
+                ay = int(target.kfx[3].item())
+                cv2.circle(image, (x, y), 5, color, 5)
+                print(target.future_points)
+                # iterate over future points
+                for point in target.future_points:
+                    # transform
+                    # trans_point = transform_coordinates(coord, trans_matrix)
+                    # draw a point at each future point
+                     cv2.circle(image, point, 1, color, 2)
+
+
 
         # choose best target
         current_target = choose_target(new_targets, trans_matrix)

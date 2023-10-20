@@ -1,8 +1,9 @@
 import numpy as np
-import math
+# import math
+import sympy as sp
 
-class Catcher(object):
-    def __init__(self, init_pos, dt):
+class Catcher():
+    def __init__(self, dt):
         
         # variance hyperparameters
         self.Rvar_x = .01                   # measurement variance x
@@ -17,17 +18,13 @@ class Catcher(object):
         self.noise_x_vel = 0.01                # x velocity noise variance
         self.noise_y_vel = 0.01                # y velocity noise variance
         self.noise_y_accel = 0.01              # y accel noise variance
-        self.g = -9.81                      # gravitational constant
-        self.theta = 5                      # ramp incline degrees
-        self.theta_rad = math.radians(self.theta)   # ramp incline radians
-        self.ga = self.g * math.cos(self.theta_rad)  # gravity along the incline
-        self.x_pos = init_pos[0]
-        self.y_pos = init_pos[1]
+        # self.x_pos = init_pos[0]
+        # self.y_pos = init_pos[1]
         self.dt = dt
         self.F = np.array([[1, 0, self.dt, 0, 0],
-                           [0, 1, 0, self.dt, self.ga * self.dt**2 / 2],
+                           [0, 1, 0, self.dt, self.dt**2 / 2],
                            [0, 0, 1, 0, 0],
-                           [0, 0, 0, 1, self.ga * self.dt],
+                           [0, 0, 0, 1, self.dt],
                            [0, 0, 0, 0, 1]])
         self.u = np.array([[0], [0], [0], [0], [0]])    # no added thrust - included for completeness
         self.H = np.array([[1, 0, 0, 0, 0],             # observation transform matrix
@@ -39,21 +36,32 @@ class Catcher(object):
         self.Q = np.diag([self.noise_x_pos, self.noise_y_pos, self.noise_x_vel, self.noise_y_vel, self.noise_y_accel])
         self.y = None
         # dict to hold current target
-        self.current_target = None
+        # self.current_target = None
         # dictionary to hold all targets
-        self.targets = {}
+        # self.targets = {}
         self.observations = []
 
     def kf(self, x, P, observation):
         # measurement update
         Z = np.array([[observation[0], observation[1]]])
+        # print(f'Z.T shape: {Z.T.shape}')
+        # print(f'H shape: {self.H.shape}')
         # innovation - difference between the observation and the state
         self.y = Z.T - (self.H @ x)
+        # print(f'y shape: {self.y.shape}')
         # innovation covariance
         S = self.H @ (P @ self.H.T) + self.R
+        # print(f'S shape: {S.shape}')
+        # print(f'P shape: {P.shape}')
+        # print(P)
         # Kalman gain - how much you should trust the observation (KG = 0) vs the state model (KG = 1)
         K = P @ self.H.T @ np.linalg.inv(S)
+        # print(f'K shape: {K.shape}')
         # update belief based on KG and innovation
+        # print(f'x shape: {x.shape}')
+        # print(x)
+        # print(f'K @ self.y: {(K @ self.y).shape}')
+        # print(K @ self.y)
         x = x + (K @ self.y)
         # update state covariance
         P = (self.I - (K @ self.H)) @ P
@@ -64,150 +72,97 @@ class Catcher(object):
 
         return x, P
     
-    def predict(self, targets):
-        '''Pass a list of target objects. Update predicted landing time and location and return.'''       
-        # iterate over list of targets
-        for target in targets:
-            # if target id not already in dictionary, then add it with first observation
-            if id not in self.targets.keys():
-                self.targets[id] = {'P': None, 'x': None, 'observations': [(xobs, yobs)]}
-                # make alias to observations
-                obs = self.targets[id]['observations']
-                # set initial observation to initial position value
-                self.targets[id]['x'] = np.array([[obs[0][0]], 
-                                                  [obs[0][1]],
-                                                  [0],
-                                                  [-.1],
-                                                  [-.1]])
-                # set initial covariance matrix
-                self.targets[id]['P'] = np.array([[self.x_pos_var, 0, 0, 0, 0],
-                                                  [0, self.y_pos_var, 0, 0, 0],
-                                                  [0, 0, self.x_vel_var, 0, 0],
-                                                  [0, 0, 0, self.y_vel_var, 0],
-                                                  [0, 0, 0, 0, self.y_acc_var]])
-            # update state and covariance with KF
-            self.targets[id]['x'], self.targets[id]['P'] = self.kf(self.targets[id]['x'], self.targets[id]['P'], (xobs, yobs))
-            # append meteorite location to list
-            target_locations.append((id, self.targets[id]['x'][0][0], self.targets[id]['x'][1][0]))
-        
-                # record data for plotting for test meteorite
-                # if id == self.test_meteorite_id:
-                #     self.record_values(xobs, yobs)
-       
-        # increment elapsed time
-        self.time += 1
+    def predict(self, target, goal_y):
+        '''Update belief about individual target based on current observation.'''       
+        if len(target.observations) < 3:
+            kfx, P, future_points, t, goal_x = None, None, [], None, None
 
-        # list of meteorite ids that were destroyed
-        destroyed_ids = []
+        # append current observation to list
+        elif len(target.observations) == 3:
+            # x initial state calculations
+            x0 = target.observations[0][0]
+            x1 = target.observations[1][0]
+            x2 = target.observations[2][0]
+            # vx1 = x1 - x0
+            vx2 = x2 - x1
 
-        # Iterate over ids of my meteorites dict
-        for id, info in self.targets.items():
-            # Check if they are no longer in the new observation list
-            if not any(id == observation[0] for observation in observations):
-                # Add to list of destroyed ids
-                destroyed_ids.append(id)
+            # y initial state calculations
+            y0 = target.observations[0][1]
+            y1 = target.observations[1][1]
+            y2 = target.observations[2][1]
+            vy1 = y1 - y0
+            vy2 = y2 - y1
+            ay2 = vy2 - vy1
 
-        # create a copy to iterate over
-        destroyed_ids_copy = destroyed_ids.copy()
-        
-        # iterate over destroyed meteorite list and remove from dict
-        for id in destroyed_ids_copy:
-            if id in self.targets:
-                if self.current_target is not None:
-                    if self.current_target['id'] == id:
-                        self.current_target = None
-                del self.targets[id]
-                # print(f'{id} destroyed')
-                destroyed_ids.remove(id)
+            # initial target belief
+            target.kfx = np.array([x2,
+                                    y2,
+                                    vx2,
+                                    vy2,
+                                    ay2]).reshape(5, 1)
+            
+            # set initial covariance matrix
+            target.P = np.array([[self.x_pos_var, 0, 0, 0, 0],
+                                    [0, self.y_pos_var, 0, 0, 0],
+                                    [0, 0, self.x_vel_var, 0, 0],
+                                    [0, 0, 0, self.y_vel_var, 0],
+                                    [0, 0, 0, 0, self.y_acc_var]])
+            
+        # starting on 4th observation, use KF to predict
+        if len(target.observations) >= 3:    
+            # update state and covariance with KF using x and P and most recent observation
+            kfx, P = self.kf(target.kfx, target.P, (target.x, target.y))
 
-        # print(f'Time: {self.time} | {self.targets[self.test_meteorite_id]=}')
-        # print(f'Time: {self.time} | {self.targets[self.test_meteorite_id]["P"][0][0]} | {self.targets[self.test_meteorite_id]["P"][1][1]}')
-        
-        # print(target_locations)
-        return target_locations
+            # # get kinematics variables
+            # x, y = kfx[0].item(), kfx[1].item()
+            # vx, vy = kfx[2].item(), kfx[3].item()
+            # ay = kfx[4].item()
 
-    def get_laser_action(self, current_aim_rad):
-        # wait until time 3 until x matrix is composed
-        if self.time > 2 and len(self.targets) != 0:
-            self.find_target(current_aim_rad)
+            # # define variables
+            # t = sp.symbols('t')
+            # goal_x = sp.symbols('goal_x')
 
-            # rads from current aim to target
-            try:
-                print(self.current_target)
-                rads_to_target = self.current_target['angle'] - current_aim_rad
-            except TypeError:
-                rads_to_target = math.pi/2 - current_aim_rad
-                print("No current targets within range")
-            except KeyError:
-                rads_to_target = math.pi/2 - current_aim_rad
-                print("No current targets within range")
+            # # kinematics equations
+            # eq_1 = sp.Eq(goal_x, x + vx * t)
+            # eq_2 = sp.Eq(goal_y, y + vy * t + ay**2 / 2)
 
-            # print(f"CurAim: {current_aim_rad} | TarAng: {self.current_target['angle']}| AngDif: {rads_to_target} | Max: {self.max_angle_change}")
+            # # solve equations
+            # solutions = sp.solve((eq_1, eq_2), (t, goal_x))
+            # # Extract solutions
+            # # positive_t_solutions = [(sol[t], sol[goal_x]) for sol in solutions if sol[t] > 0]
+            # print(solutions)
 
-            fire = False
+            # # extract solutions
+            # t = solutions[t]
+            # goal_x = solutions[goal_x]
+            goal_x = None
 
-            if self.max_angle_change <= rads_to_target:
-                angle_change_rad = self.max_angle_change
-            elif rads_to_target <= -self.max_angle_change:
-                angle_change_rad = -self.max_angle_change
-            elif -self.max_angle_change < rads_to_target < self.max_angle_change:
-                angle_change_rad = rads_to_target
-                if self.current_target is not None:
-                    if self.target_within_range(self.current_target['x'][0], self.current_target['x'][1]):
-                        fire = True
+            # # initialize future points as empty list
+            future_points = []
 
-        else:
-            angle_change_rad = 0
-            fire = False
+            # initialize number of time steps to predict into the future
+            t = 1
+            
+            # predict future points until ball's predicted location is off screen
+            while t < 1:
+                # elapsed time until prediction
+                e_time = t * self.dt
+                # state dynamics model for future location
+                p_F = np.array([[1, 0, e_time, 0, 0],
+                            [0, 1, 0, e_time, e_time**2 / 2],
+                            [0, 0, 1, 0, 0],
+                            [0, 0, 0, 1, e_time],
+                            [0, 0, 0, 0, 1]])
 
-        return angle_change_rad, fire
-    
-    def find_target(self, current_aim_rad):
-        # iterate over all meteorite observations
-        print(f'{len(self.observations)} meteorites observed')
-        for observation in self.observations:
-            # ignore observations with id -1 (destroyed)
-            if observation[0] != -1 and observation[0] in self.targets.keys():
-                # only consider targets that have 'x' recorded
-                if self.targets[observation[0]]['x'] is not None:
-                    obs_id, obs_x, obs_y = observation[0], observation[1], observation[2]  
+                # calculate predicted x belief matrix
+                p_kfx = p_F @ target.kfx
+                # get predicted coordinate
+                predicted_coord = (int(p_kfx[0].item()), int(p_kfx[1].item()))
+                # append to list of future coordinates
+                future_points.append(predicted_coord)
+                # increment time step
+                t += 1
 
-                    if self.current_target is None:
-                        self.current_target = self.targets[obs_id]
-                        self.current_target['id'] = obs_id
-                
-                    # refer to current target's state
-                    current_target_x_pos = self.current_target['x'][0].item()
-                    current_target_y_pos = self.current_target['x'][1].item()
-                    current_target_x_vel = self.current_target['x'][2].item()
-                    current_target_y_vel = self.current_target['x'][3].item()
-                    target_future_x_pos = current_target_x_pos + current_target_x_vel * self.dt
-                    target_future_y_pos = current_target_y_pos + current_target_y_vel * self.dt
-                    self.current_target['angle'] = math.atan2((target_future_y_pos+ 1), target_future_x_pos)
-                    # calculate impact time - consider ground is at -1
-                    current_target_impact_time = current_target_y_vel / (target_future_y_pos + 1)
 
-                    print(f"TarId: {self.current_target['id']} | x: {current_target_x_pos} | y: {current_target_y_pos}")
 
-                    # remove target if it will go out of range
-                    if self.target_within_range(target_future_x_pos, target_future_y_pos) == False or target_future_y_pos < -1:
-                        self.current_target = None
-
-                    # # refer to current target's y position
-                    # tar_bel_y_pos = self.current_target['x'][1]
-                    
-                    # calculate impact time for current observation
-                    print(f'Is ID in targets?: {obs_id in self.targets.keys()}')
-                    print(f'{self.targets[obs_id]=}')
-                    obs_y_vel = self.targets[obs_id]['x'][3].item()
-                    # calculate impact time - consider ground is at -1
-                    obs_impact_time = obs_y_vel / (obs_y + 1)
-
-                    if obs_impact_time < current_target_impact_time:
-                    # if -1 < obs_y < current_target_y_pos and self.target_within_range(obs_x, obs_y):
-                        
-                        # make this observation current target
-                        self.current_target = self.targets[obs_id]
-                        self.current_target['id'] = obs_id
-
-        
+        return kfx, P, future_points, t, goal_x
