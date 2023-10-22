@@ -27,9 +27,11 @@ class Target:
         # list of observations
         self.observations = []
         # list of future points
-        self.future_points = []
+        self.future_points = [(0, 0, 1000)]
+        self.goal_x = None
+        self.impact_time = 1000
 
-    def _repr_(self):
+    def __repr__(self):
         return f'{self.id}: ({self.x}, {self.y})'
     
     def is_tracking(self, circle_x, circle_y):
@@ -82,8 +84,11 @@ LED_DMA = 10
 LED_BRIGHTNESS = 255
 LED_INVERT = False
 
+# camera frame rate
+framerate = 15
+
 # create instance of catcher class at 30 fps
-catcher = Catcher(dt=1/30)
+catcher = Catcher(dt=1/framerate)
 
 # list of colors to draw circles
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
@@ -218,11 +223,27 @@ def transform_coordinates(coord, transformation_matrix):
 
 def choose_target(new_targets, trans_matrix):
     global current_target
-
+    # print("choose target")
+    # if there are targets
     if len(new_targets) != 0:
-        # current_target = new_targets[0]
-        current_target = sorted(new_targets, key=lambda target: target.y)[-1]
+        # print('there are new targets')
+        # print(f' New Targets: {new_targets[0].future_points}')
+
+        # set current targets to the target whose last future point's t value is lowest (soonest impact)
+        current_target = min(new_targets, key=lambda target: target.future_points[-1][2])
+        print(f'Current target is:  {current_target}')
+        # check if current target will never impact
+        if current_target.future_points[-1][2] == 1000:
+            # select target lowest on the screen
+            current_target = max(new_targets, key=lambda target: target.y)
+            # set target's x as current x since it has no future prediction
+            current_target.goal_x = current_target.x
+        else:
+            # set goal to x of last predicted point
+            current_target.goal_x = current_target.future_points[-1][0]
+
     else:
+        # print('no current targtes')
         current_target = None
 
     return current_target
@@ -233,7 +254,8 @@ def go_to_position(position):
     time.sleep(.3)
 
 def servo_thread_fn():
-    global goal_pos, lookup_dict, dot_x
+    print('servo thread')
+    global goal_pos, lookup_dict, dot_x, current_target
     # delay to let camera start
     time.sleep(3)
 
@@ -246,7 +268,7 @@ def servo_thread_fn():
                 # delay
                 time.sleep(.1)
                 # record goal position for given dot_x
-                print(f'Adding {dot_x}: {goal_pos}')
+                # print(f'Adding {dot_x}: {goal_pos}')
                 lookup_dict[dot_x] = goal_pos
                 # delay for movement
                 # time.sleep(.1)
@@ -260,8 +282,10 @@ def servo_thread_fn():
 
         # get current target position
         if current_target is not None:
+            print(f'Servo knows current target is {current_target}')
             # x value of the target
-            current_target_x = current_target.x
+            # current_target_x = current_target.x
+            current_target_x = current_target.goal_x
             # closest key in the lookup_dict
             closest_key = min(lookup_dict, key=lambda key: abs(current_target_x - key))
             # retrieve servo pos
@@ -287,7 +311,7 @@ width, height = 300, 480
 camera = PiCamera()
 camera.resolution = (width, height)
 camera.rotation = 90
-camera.framerate = 30
+camera.framerate = framerate
 rawCapture = PiRGBArray(camera, size=(width, height))
 time.sleep(1)
 
@@ -365,16 +389,16 @@ try:
             print('Calibrating')
         
         # show servo location dot
-        servo_dot(servo_box_l, servo_box_r)
+        # servo_dot(servo_box_l, servo_box_r)
 
         # draw bounding box
-        cv2.line(image, top_left, top_right, (0, 255, 255), 1)
-        cv2.line(image, top_right, bottom_right, (0, 255, 255), 1)
-        cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
-        cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
+        # cv2.line(image, top_left, top_right, (0, 255, 255), 1)
+        # cv2.line(image, top_right, bottom_right, (0, 255, 255), 1)
+        # cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
+        # cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
 
         # draw servo line
-        cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
+        # cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
 
         # Use Hough Circle Transform to detect circles with parameters
         circles = cv2.HoughCircles(
@@ -390,6 +414,7 @@ try:
 
             # remove false circles
             for circle in circles[0, :]:
+                cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 0, 0), 5)
                 # append to list if white
                 try:
                     if gray[circle[1], circle[0]] > 200 and circle[1] < servo_box_l[1]:
@@ -403,7 +428,7 @@ try:
 
             print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos} | Change Count: {change_count} | Max change Count: {max_change_count}')
          
-            # check if number of circles changesd
+            # check if number of circles changed
             if abs(num_targets - num_circles) == 1 and change_count < update_threshold:
                 # pass on current targets
                 new_targets = targets.copy()
@@ -474,19 +499,19 @@ try:
             # draw circle
             cv2.circle(image, (target.x, target.y), target.r, color, 2)
             # transform to simple grid
-            target.tx, target.ty = transform_coordinates((target.x, target.y), trans_matrix)
+            # target.tx, target.ty = transform_coordinates((target.x, target.y), trans_matrix)
             # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 255, 0), 2)
             # write transformed coordinates by circle
-            trans_string = f'({int(target.tx)}, {int(target.ty)})'
+            # trans_string = f'({int(target.tx)}, {int(target.ty)})'
             # add coordinate text
-            cv2.putText(image, trans_string, (target.x - 17, target.y + 15), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 0, 0), 1)
+            # cv2.putText(image, trans_string, (target.x - 17, target.y + 15), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 0, 0), 1)
             # write target number
-            cv2.putText(image, str(target.id), (target.x - 4, target.y + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
+            # cv2.putText(image, str(target.id), (target.x - 4, target.y + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
             # print(f'{target.id}: {trans_string}')
             # append observation to history
             target.observations.append((target.x, target.y))
             # update belief and future points with Kalman filter
-            target.kfx, target.P, target.future_points, target.t, target.goal_x = catcher.predict(target=target, goal_y=goal_y)
+            target = catcher.predict(target=target, goal_y=goal_y)
             # if the KF has developed a belief
             if target.kfx is not None:
                 # extract belief state kinematics parameters
@@ -494,15 +519,15 @@ try:
                 vx, vy = int(target.kfx[2].item()), int(target.kfx[3].item())
                 ay = int(target.kfx[3].item())
                 cv2.circle(image, (x, y), 5, color, 5)
-                print(target.future_points)
-                # iterate over future points
+                # print(target.future_points)
+                # iterate over future points and draw them
                 for point in target.future_points:
                     # transform
                     # trans_point = transform_coordinates(coord, trans_matrix)
                     # draw a point at each future point
-                     cv2.circle(image, point, 1, color, 2)
-
-
+                     cv2.circle(image, (point[0], point[1]), 1, color, 2)
+                # set catch_x as x value of predicted state belief before goal_y
+                target.catch_x = target.future_points[-1][0]
 
         # choose best target
         current_target = choose_target(new_targets, trans_matrix)

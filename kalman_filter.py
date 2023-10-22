@@ -8,6 +8,8 @@ class Catcher():
         # variance hyperparameters
         self.Rvar_x = .01                   # measurement variance x
         self.Rvar_y = .01                   # measurement variance y
+        self.Rvar_x = .001                   # measurement variance x
+        self.Rvar_y = .001                   # measurement variance y
         self.x_pos_var = self.Rvar_x        # initial x position variance
         self.y_pos_var = self.Rvar_y        # initial y position variance
         self.x_vel_var = 1000               # initial x velocity variance
@@ -75,7 +77,7 @@ class Catcher():
     def predict(self, target, goal_y):
         '''Update belief about individual target based on current observation.'''       
         if len(target.observations) < 3:
-            kfx, P, future_points, t, goal_x = None, None, [], None, None
+            pass
 
         # append current observation to list
         elif len(target.observations) == 3:
@@ -111,40 +113,22 @@ class Catcher():
         # starting on 4th observation, use KF to predict
         if len(target.observations) >= 3:    
             # update state and covariance with KF using x and P and most recent observation
-            kfx, P = self.kf(target.kfx, target.P, (target.x, target.y))
-
-            # # get kinematics variables
-            # x, y = kfx[0].item(), kfx[1].item()
-            # vx, vy = kfx[2].item(), kfx[3].item()
-            # ay = kfx[4].item()
-
-            # # define variables
-            # t = sp.symbols('t')
-            # goal_x = sp.symbols('goal_x')
-
-            # # kinematics equations
-            # eq_1 = sp.Eq(goal_x, x + vx * t)
-            # eq_2 = sp.Eq(goal_y, y + vy * t + ay**2 / 2)
-
-            # # solve equations
-            # solutions = sp.solve((eq_1, eq_2), (t, goal_x))
-            # # Extract solutions
-            # # positive_t_solutions = [(sol[t], sol[goal_x]) for sol in solutions if sol[t] > 0]
-            # print(solutions)
-
-            # # extract solutions
-            # t = solutions[t]
-            # goal_x = solutions[goal_x]
-            goal_x = None
-
-            # # initialize future points as empty list
-            future_points = []
+            target.kfx, target.P = self.kf(target.kfx, target.P, (target.x, target.y))
 
             # initialize number of time steps to predict into the future
             t = 1
+
+            # time cutoff for no impact
+            time_cutoff = 100
+
+            # set initial prediction to current state
+            next_kfx = target.kfx.copy()
+
+            # reinitialize future points to empty list
+            target.future_points = [(0, 0, 1000)]
             
-            # predict future points until ball's predicted location is off screen
-            while t < 1:
+            # while kalman filter belief of y position is above goal
+            while next_kfx[1] < goal_y and t != 1000:
                 # elapsed time until prediction
                 e_time = t * self.dt
                 # state dynamics model for future location
@@ -155,14 +139,17 @@ class Catcher():
                             [0, 0, 0, 0, 1]])
 
                 # calculate predicted x belief matrix
-                p_kfx = p_F @ target.kfx
-                # get predicted coordinate
-                predicted_coord = (int(p_kfx[0].item()), int(p_kfx[1].item()))
+                next_kfx = p_F @ target.kfx
+                # get predicted coordinate and time until that location
+                predicted_coord = (int(next_kfx[0].item()), int(next_kfx[1].item()), t)
+                # if time cutoff has reached target has no predicted impact
+                if t > time_cutoff:
+                    # indicate no predicted impact as 1000
+                    t = 1000
+                else:
+                    # increment time step
+                    t += 1
                 # append to list of future coordinates
-                future_points.append(predicted_coord)
-                # increment time step
-                t += 1
+                target.future_points.append(predicted_coord)
 
-
-
-        return kfx, P, future_points, t, goal_x
+        return target
