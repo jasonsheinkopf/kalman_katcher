@@ -6,8 +6,8 @@ class Catcher():
     def __init__(self, dt):
         
         # variance hyperparameters
-        self.Rvar_x = .01                   # measurement variance x
-        self.Rvar_y = .01                   # measurement variance y
+        self.Rvar_x = .001                   # measurement variance x
+        self.Rvar_y = .001                   # measurement variance y
         self.x_pos_var = self.Rvar_x        # initial x position variance
         self.y_pos_var = self.Rvar_y        # initial y position variance
         self.x_vel_var = 1000               # initial x velocity variance
@@ -15,17 +15,18 @@ class Catcher():
         self.y_acc_var = 1000               # initial x accel variance
         self.noise_x_pos = 0.1                # x position noise variance
         self.noise_y_pos = 0.1                # y position noise variance
-        self.noise_x_vel = 0.1                # x velocity noise variance
-        self.noise_y_vel = 0.01                # y velocity noise variance
+        self.noise_x_vel = 1.0                # x velocity noise variance
+        self.noise_y_vel = 1.0                # y velocity noise variance
         self.noise_y_accel = 0.1              # y accel noise variance
-        self.damping = 0.1                  # percent of energy kept on bounce
+        self.damping = 1                  # percent of energy kept on bounce
+        self.r = 0.75                           # percent of energy kept on roll (restitution)
         # self.x_pos = init_pos[0]
         # self.y_pos = init_pos[1]
         self.dt = dt
-        self.F = np.array([[1, 0, self.dt, 0, 0],
-                           [0, 1, 0, self.dt, self.dt**2 / 2],
-                           [0, 0, 1, 0, 0],
-                           [0, 0, 0, 1, self.dt],
+        self.F = np.array([[1, 0, self.dt * self.r, 0, 0],
+                           [0, 1, 0, self.dt * self.r, self.dt**2 / 2],
+                           [0, 0, self.r, 0, 0],
+                           [0, 0, 0, self.r, self.dt],
                            [0, 0, 0, 0, 1]])
         self.u = np.array([[0], [0], [0], [0], [0]])    # no added thrust - included for completeness
         self.H = np.array([[1, 0, 0, 0, 0],             # observation transform matrix
@@ -73,7 +74,7 @@ class Catcher():
 
         return x, P
     
-    def predict(self, target, goal_y):
+    def predict(self, target, goal_y, boundaries):
         '''Update belief about individual target based on current observation.'''       
         # if len(target.observations) < 3:
         if len(target.observations) < 0:
@@ -86,20 +87,20 @@ class Catcher():
             # x0 = target.observations[0][0]
             # x1 = target.observations[1][0]
             # x2 = target.observations[2][0]
-            # # vx1 = x1 - x0
+            # vx1 = x1 - x0
             # vx2 = x2 - x1
+            # vxavg = (vx1 + vx2) / 2
 
             # # y initial state calculations
             # y0 = target.observations[0][1]
             # y1 = target.observations[1][1]
             # y2 = target.observations[2][1]
-            # vy1 = y1 - y0
-            # vy2 = y2 - y1
-            # ay2 = vy2 - vy1
+            # vy1 = y0 - y1
+            # vy2 = y1 - y2
+            # ay2 = vy1 - vy2
 
             x2, y2 = target.observations[0][0], target.observations[0][1]
-            # vx2, vy2 = 0, -1000
-            vx2, vy2 = 0, 0
+            vx2, vy2 = 0, -100
             ay2 = 3000
 
             # initial target belief
@@ -134,35 +135,42 @@ class Catcher():
             next_kfx = target.kfx.copy()
 
             # reinitialize future points to empty list
-            target.future_points = [(0, 0, 10000)]
+            target.future_points = [(next_kfx[0].item(), next_kfx[1].item(), 10000)]
             
             # while kalman filter belief of y position is above goal
-            while next_kfx[1] < goal_y and t != 1000:
+            while next_kfx[1] < goal_y and t != 100:
                 # elapsed time until prediction
                 e_time = t * self.dt
                 # state dynamics model for future location
-                p_F = np.array([[1, 0, e_time, 0, 0],
-                                [0, 1, 0, e_time, e_time**2 / 2],
-                                [0, 0, 1, 0, 0],
-                                [0, 0, 0, 1, e_time],
+                p_F = np.array([[1, 0, e_time * self.r, 0, 0],
+                                [0, 1, 0, e_time * self.r, e_time**2 / 2],
+                                [0, 0, self.r, 0, 0],
+                                [0, 0, 0, self.r, e_time],
                                 [0, 0, 0, 0, 1]])
 
                 # calculate predicted x belief matrix
                 next_kfx = p_F @ next_kfx
+                # boundary border
+                border_buffer = 20
                 # if future point x past right wall and moving to the right
-                if next_kfx[0].item() > 250 and next_kfx[2].item() > 0:
+                if next_kfx[0].item() > boundaries['right'] - border_buffer and next_kfx[2].item() > 0:
                     # invert vx to bounce
                     next_kfx[2] *= -self.damping
-                elif next_kfx[0].item() < 50 and next_kfx[2].item() < 0:
+                    next_kfx[3] *= self.damping
+                elif next_kfx[0].item() < boundaries['left'] + border_buffer and next_kfx[2].item() < 0:
                     # invert vx to bounce
                     next_kfx[2] *= -self.damping
+                    next_kfx[3] *= self.damping
+                # if the next point y is above the top
+                elif next_kfx[1].item() < boundaries['top'] + border_buffer and next_kfx[3].item() < 0:
+                    next_kfx[3] *= -self.damping
 
                 # get predicted coordinate and time until that location
                 predicted_coord = (int(next_kfx[0].item()), int(next_kfx[1].item()), t)
                 # if time cutoff has reached target has no predicted impact
                 if t > time_cutoff:
                     # indicate no predicted impact as 1000
-                    t = 1000
+                    t = 10000
                 else:
                     # increment time step
                     t += 1

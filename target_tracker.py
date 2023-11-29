@@ -85,7 +85,7 @@ LED_BRIGHTNESS = 255
 LED_INVERT = False
 
 # camera frame rate
-framerate = 30
+framerate = 40
 
 # create instance of catcher class at 30 fps
 catcher = Catcher(dt=1/framerate)
@@ -184,8 +184,8 @@ exit_event = threading.Event()
 count = 0
 
 # initial servo position
-min_pos = 700
-max_pos = 2200
+min_pos = 750
+max_pos = 2100
 goal_pos = (max_pos - min_pos) / 2
 servo_line_offset = 30
 
@@ -235,14 +235,43 @@ def choose_target(new_targets, trans_matrix):
         # set current target to the target whose last future point's t value is lowest (soonest impact)
         current_target = min(new_targets, key=lambda target: target.future_points[-1][2])
         # check if current target will never impact
-        if current_target.future_points[-1][2] == 10000:
+        if current_target.future_points[-1][2] == 10000 or len(current_target.future_points) == 1:
             # select target lowest on the screen
             current_target = max(new_targets, key=lambda target: target.y)
             # set target's x as current x since it has no future prediction
             current_target.goal_x = current_target.x
         else:
+            # last 2 future points are before and then after crossing goal
+            print(f'Future point count: {len(current_target.future_points)}')
+            before = (current_target.future_points[-2][0], current_target.future_points[-2][1])
+            after = (current_target.future_points[-1][0], current_target.future_points[-1][1])
+            print(before)
+            print(after)
+            # left and right endpoints of the goal
+            left_goal = boundaries['goal_l_point']
+            right_goal = boundaries['goal_r_point']
+            try:
+                # calculate slopes
+                m_points = (after[1] - before[1]) / (after[0] - before[0])
+                m_goal = (left_goal[1] - right_goal[1]) / (left_goal[0] - right_goal[0])
+                # calculate y-intercepts
+                b_points = before[1] - m_points * before[0]
+                b_goal = right_goal[1] - m_goal * right_goal[0]
+                # calculate intersection
+                x_goal_predict = int((b_goal - b_points) / (m_points - m_goal))
+                y_goal_predict = int(m_points * x_goal_predict + b_points)
+
+                # goal x is where the line between these points intersects goal
+                current_target.goal_x = x_goal_predict
+            except ZeroDivisionError:
+                x_goal_predict = after[0]
+                y_goal_predict = int((left_goal[1] + right_goal[1]) / 2)
+                current_target.goal_x = x_goal_predict
+            # draw circle
+            cv2.circle(image, (x_goal_predict, y_goal_predict), 5, (0, 0, 0), 5)
+
             # set goal to x of last predicted point
-            current_target.goal_x = current_target.future_points[-1][0]
+            # current_target.goal_x = current_target.future_points[-1][0]
         print(f'Catching target {current_target.id} at x = {round(current_target.goal_x)}')
 
     else:
@@ -276,12 +305,12 @@ def servo_thread_fn():
                 # send servo to active position
                 go_to_position(goal_pos)
                 # delay
-                time.sleep(.1)
+                time.sleep(.05)
                 # record goal position for given dot_x
                 print(f'Adding {dot_x}: {goal_pos}')
                 lookup_dict[dot_x] = goal_pos
                 # delay for movement
-                time.sleep(.1)
+                time.sleep(.05)
                 # move servo
                 goal_pos += 10
             # Save the dictionary to a pickle file
@@ -325,6 +354,7 @@ camera = PiCamera()
 camera.resolution = (width, height)
 camera.rotation = 90
 camera.framerate = framerate
+camera.shutter_speed = 4000
 rawCapture = PiRGBArray(camera, size=(width, height))
 time.sleep(1)
 
@@ -398,13 +428,23 @@ try:
         # calibrate corners on first frame or key press
         if frame_num == 0 or key == ord('c'):
             top_left, bottom_right, top_right, bottom_left, roi, servo_box_l, servo_box_r, trans_matrix = calibrate(gray)   
+            # boundaries for bounce
+            boundaries = {
+                'left': (top_left[0] + bottom_left[0]) / 2,
+                'right': (top_right[0] + bottom_right[0]) / 2,
+                'top': (top_left[1] + top_right[1]) / 2,
+                'goal': (servo_box_l[1] + servo_box_r[1]) / 2,
+                'goal_l_point': servo_box_l,
+                'goal_r_point': servo_box_r
+            }
             goal_y = int((servo_box_l[1] + servo_box_r[1]) / 2)
             print('Calibrating')
         
-        # set dot color to match current target color
-        dot_color = colors[current_target.id % 5] if current_target is not None else (0, 0, 0)
-        # show servo location dot
-        servo_dot(servo_box_l, servo_box_r, dot_color)
+        if not lookup_is_saved:
+            # set dot color to match current target color
+            dot_color = (255, 0, 0)
+            # show servo location dot
+            servo_dot(servo_box_l, servo_box_r, dot_color)
 
         # draw bounding box
         cv2.line(image, top_left, top_right, (0, 255, 255), 1)
@@ -412,8 +452,10 @@ try:
         cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
         cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
 
+        # set goal color to match current target color
+        goal_color = colors[current_target.id % 5] if current_target is not None else (0, 0, 0)
         # draw servo line
-        cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
+        cv2.line(image, servo_box_r, servo_box_l, goal_color, 2)
 
         # Use Hough Circle Transform to detect circles with parameters
         circles = cv2.HoughCircles(
@@ -427,14 +469,17 @@ try:
 
             circle_list = []
 
-            # remove false circles
+            # iterate over detected circles
             for circle in circles[0, :]:
                 # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 0, 0), 5)
-                # append to list if white
                 try:
+                    # check if circle has white center
                     if gray[circle[1], circle[0]] > 200 and circle[1] < servo_box_l[1]:
+                    # if gray[circle[1], circle[0]] > 200:
+                        # append to list if white
                         circle_list.append(circle)
                 except IndexError:
+                    print('Index error when checking for white circles.')
                     pass
             
             num_targets = len(targets)
@@ -444,7 +489,7 @@ try:
             # print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos} | Change Count: {change_count} | Max change Count: {max_change_count}')
          
             # check if number of circles changed
-            if abs(num_targets - num_circles) == 1 and change_count < update_threshold:
+            if abs(num_targets - num_circles) != 0 and change_count < update_threshold:
                 # pass on current targets
                 new_targets = targets.copy()
                 # set flag to do double check
@@ -528,7 +573,7 @@ try:
             # bounce
 
             # update belief and future points with Kalman filter
-            target = catcher.predict(target=target, goal_y=goal_y)
+            target = catcher.predict(target=target, goal_y=goal_y, boundaries=boundaries)
             # if the KF has developed a belief
             if target.kfx is not None:
                 # extract belief state kinematics parameters
@@ -537,12 +582,28 @@ try:
                 ay = int(target.kfx[3].item())
                 cv2.circle(image, (x, y), 5, color, 5)
                 # print(target.future_points)
-                # iterate over future points and draw them
-                for point in target.future_points:
-                    # transform
-                    # trans_point = transform_coordinates(coord, trans_matrix)
+                # track previous point
+                prev_future_point = (int(target.kfx[0].item()), int(target.kfx[1].item()))
+                num_future_points = len(target.future_points)
+                # iterate over future points and draw them omitting first
+                for i, point in enumerate(target.future_points[1:]):
+                    next_future_point = (point[0], point[1])
+                    # set color for last point
+                    if i == num_future_points - 2:
+                        color = (255, 255, 255)
+                        rad = 5
+                    # elif i == num_future_points -3:
+                    #     color = (255, 0, 255)
+                    #     rad = 5
+                    else:
+                        rad = 1
                     # draw a point at each future point
-                     cv2.circle(image, (point[0], point[1]), 1, color, 2)
+                    cv2.circle(image, next_future_point, rad, color, 2)
+                    # draw a line from prev point
+                    print(f'{prev_future_point=}, {next_future_point=}')
+                    cv2.line(image, prev_future_point, next_future_point, color, 1)
+                    # update prev
+                    prev_future_point = next_future_point
                 # set catch_x as x value of predicted state belief before goal_y
                 target.catch_x = target.future_points[-1][0]
 
@@ -610,7 +671,7 @@ try:
 
 
         # Display the image in a non-GUI window
-        cv2.imshow('Circle Detection', image)
+        cv2.imshow('Kalman Katcher', image)
 
         rawCapture.truncate(0)
 
