@@ -42,7 +42,7 @@ class Target:
     def find_distance(self, circle):
         return math.sqrt((int(circle[0]) - int(self.x))**2 + (int(circle[1]) - int(self.y))**2)
 
-def servo_dot(servo_box_l, servo_box_r):
+def servo_dot(servo_box_l, servo_box_r, color):
     global dot_x
     x1, y1 = servo_box_l
     x2, y2 = servo_box_r
@@ -71,7 +71,7 @@ def servo_dot(servo_box_l, servo_box_r):
         y_center = int(y1 + np.linspace(0, 1, 100)[center_index] * (y2 - y1))
 
         # Draw a circle at the center point
-        cv2.circle(image, (x_center, y_center), 15, (0, 0, 255), -1)
+        cv2.circle(image, (x_center, y_center), 10, color, -1)
         # print(f'x: {x_center}, y: {y_center}')
 
         dot_x = x_center
@@ -85,7 +85,7 @@ LED_BRIGHTNESS = 255
 LED_INVERT = False
 
 # camera frame rate
-framerate = 15
+framerate = 30
 
 # create instance of catcher class at 30 fps
 catcher = Catcher(dt=1/framerate)
@@ -115,7 +115,7 @@ def calibrate(gray):
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
     location = max_loc
     bottom_left = (location[0] - edge, location[1] + bl_h)
-    # cv2.rectangle(image, location, bottom_left, 255, 5)
+    cv2.rectangle(image, location, bottom_left, 255, 5)
     # cv2.circle(image, bottom_left, 5, (0, 255, 0), 2)
 
     # top left
@@ -123,7 +123,7 @@ def calibrate(gray):
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
     location = max_loc  
     top_left = (location[0] - edge, location[1])
-    # cv2.rectangle(image, location, top_left, 255, 5)
+    cv2.rectangle(image, location, top_left, 255, 5)
     # cv2.circle(image, top_left, 5, (0, 255, 0), 2)
 
     # top right
@@ -131,7 +131,7 @@ def calibrate(gray):
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
     location = max_loc
     top_right = (location[0] + tr_w + edge, location[1])
-    # cv2.rectangle(image, location, top_right, 255, 5)
+    cv2.rectangle(image, location, top_right, 255, 5)
     # cv2.circle(image, top_left, 5, (0, 255, 0), 2)
 
     # bottom right
@@ -139,7 +139,7 @@ def calibrate(gray):
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
     location = max_loc  
     bottom_right = (location[0] + br_w + edge, location[1] + br_h)
-    # cv2.rectangle(image, location, bottom_right, 255, 5)
+    cv2.rectangle(image, location, bottom_right, 255, 5)
     # cv2.circle(image, bottom_right, 5, (0, 255, 0), 2)
 
     # Define a region of interest (ROI) based on the bounding box
@@ -185,9 +185,9 @@ count = 0
 
 # initial servo position
 min_pos = 700
-max_pos = 2300
-goal_pos = min_pos
-servo_line_offset = 20
+max_pos = 2200
+goal_pos = (max_pos - min_pos) / 2
+servo_line_offset = 30
 
 # global variable for current target
 current_target = None
@@ -210,6 +210,9 @@ pwm = pigpio.pi()
 pwm.set_mode(servo, pigpio.OUTPUT)
 pwm.set_PWM_frequency( servo, 50 )
 
+# change this flag to False if you don't have a lookup.pkl
+lookup_is_saved = True
+
 def transform_coordinates(coord, transformation_matrix):
     # Create a list of coordinates to be transformed
     coordinates = np.array([[[coord[0], coord[1]]]], dtype=np.float32)
@@ -229,11 +232,10 @@ def choose_target(new_targets, trans_matrix):
         # print('there are new targets')
         # print(f' New Targets: {new_targets[0].future_points}')
 
-        # set current targets to the target whose last future point's t value is lowest (soonest impact)
+        # set current target to the target whose last future point's t value is lowest (soonest impact)
         current_target = min(new_targets, key=lambda target: target.future_points[-1][2])
-        print(f'Current target is:  {current_target}')
         # check if current target will never impact
-        if current_target.future_points[-1][2] == 1000:
+        if current_target.future_points[-1][2] == 10000:
             # select target lowest on the screen
             current_target = max(new_targets, key=lambda target: target.y)
             # set target's x as current x since it has no future prediction
@@ -241,9 +243,10 @@ def choose_target(new_targets, trans_matrix):
         else:
             # set goal to x of last predicted point
             current_target.goal_x = current_target.future_points[-1][0]
+        print(f'Catching target {current_target.id} at x = {round(current_target.goal_x)}')
 
     else:
-        # print('no current targtes')
+        # print('no current targets')
         current_target = None
 
     return current_target
@@ -255,23 +258,30 @@ def go_to_position(position):
 
 def servo_thread_fn():
     print('servo thread')
-    global goal_pos, lookup_dict, dot_x, current_target
+    global goal_pos, lookup_dict, dot_x, current_target, lookup_is_saved
     # delay to let camera start
     time.sleep(3)
 
     # change this flag to True if you already have a lookup table
-    lookup_is_saved = True
+    # lookup_is_saved = True
     
     while not exit_event.is_set():
         if lookup_is_saved == False:
+            # start servo at min position
+            goal_pos = min_pos
+            # create empty lookup dict
+            lookup_dict = {}
+            # continue to sweep until it hits mas pos
             while goal_pos < max_pos:
+                # send servo to active position
+                go_to_position(goal_pos)
                 # delay
                 time.sleep(.1)
                 # record goal position for given dot_x
-                # print(f'Adding {dot_x}: {goal_pos}')
+                print(f'Adding {dot_x}: {goal_pos}')
                 lookup_dict[dot_x] = goal_pos
                 # delay for movement
-                # time.sleep(.1)
+                time.sleep(.1)
                 # move servo
                 goal_pos += 10
             # Save the dictionary to a pickle file
@@ -282,7 +292,7 @@ def servo_thread_fn():
 
         # get current target position
         if current_target is not None:
-            print(f'Servo knows current target is {current_target}')
+            # print(f'Servo knows current target is {current_target}')
             # x value of the target
             # current_target_x = current_target.x
             current_target_x = current_target.goal_x
@@ -290,6 +300,9 @@ def servo_thread_fn():
             closest_key = min(lookup_dict, key=lambda key: abs(current_target_x - key))
             # retrieve servo pos
             goal_pos = lookup_dict[closest_key]
+        else:
+            # if no target is seen, return to middle point
+            goal_pos = (max_pos + min_pos) / 2
 
         # send servo to active position
         go_to_position(goal_pos)
@@ -388,17 +401,19 @@ try:
             goal_y = int((servo_box_l[1] + servo_box_r[1]) / 2)
             print('Calibrating')
         
+        # set dot color to match current target color
+        dot_color = colors[current_target.id % 5] if current_target is not None else (0, 0, 0)
         # show servo location dot
-        # servo_dot(servo_box_l, servo_box_r)
+        servo_dot(servo_box_l, servo_box_r, dot_color)
 
         # draw bounding box
-        # cv2.line(image, top_left, top_right, (0, 255, 255), 1)
-        # cv2.line(image, top_right, bottom_right, (0, 255, 255), 1)
-        # cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
-        # cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
+        cv2.line(image, top_left, top_right, (0, 255, 255), 1)
+        cv2.line(image, top_right, bottom_right, (0, 255, 255), 1)
+        cv2.line(image, bottom_right, bottom_left, (0, 255, 255), 1)
+        cv2.line(image, bottom_left, top_left, (0, 255, 255), 1)
 
         # draw servo line
-        # cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
+        cv2.line(image, servo_box_r, servo_box_l, (255, 0, 0), 2)
 
         # Use Hough Circle Transform to detect circles with parameters
         circles = cv2.HoughCircles(
@@ -414,7 +429,7 @@ try:
 
             # remove false circles
             for circle in circles[0, :]:
-                cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 0, 0), 5)
+                # cv2.circle(image, (circle[0], circle[1]), circle[2], (0, 0, 0), 5)
                 # append to list if white
                 try:
                     if gray[circle[1], circle[0]] > 200 and circle[1] < servo_box_l[1]:
@@ -426,7 +441,7 @@ try:
             num_circles = len(circle_list)
             tar_to_add = num_circles - num_targets
 
-            print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos} | Change Count: {change_count} | Max change Count: {max_change_count}')
+            # print(f'Targets: {num_targets} | Circles: {num_circles} | Extra Circ: {tar_to_add} | Angle: {goal_pos} | Change Count: {change_count} | Max change Count: {max_change_count}')
          
             # check if number of circles changed
             if abs(num_targets - num_circles) == 1 and change_count < update_threshold:
@@ -434,7 +449,7 @@ try:
                 new_targets = targets.copy()
                 # set flag to do double check
                 change_count += 1
-                print(f'Circles != Targets {change_count} times in a row')
+                # print(f'Circles != Targets {change_count} times in a row')
                 if change_count > max_change_count:
                     max_change_count = change_count
             else:
@@ -510,6 +525,8 @@ try:
             # print(f'{target.id}: {trans_string}')
             # append observation to history
             target.observations.append((target.x, target.y))
+            # bounce
+
             # update belief and future points with Kalman filter
             target = catcher.predict(target=target, goal_y=goal_y)
             # if the KF has developed a belief
@@ -587,6 +604,9 @@ try:
             circle_params['maxRadius'] -= 1
             save_values(circle_params)
             print(circle_params)
+        elif key == ord('t'):
+            lookup_is_saved = False
+            print('Regenerating lookup table')
 
 
         # Display the image in a non-GUI window
