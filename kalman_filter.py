@@ -15,11 +15,11 @@ class Catcher():
         self.y_acc_var = 1000               # initial x accel variance
         self.noise_x_pos = 0.1                # x position noise variance
         self.noise_y_pos = 0.1                # y position noise variance
-        self.noise_x_vel = 1.0                # x velocity noise variance
-        self.noise_y_vel = 1.0                # y velocity noise variance
+        self.noise_x_vel = 10.0                # x velocity noise variance
+        self.noise_y_vel = 10.0                # y velocity noise variance
         self.noise_y_accel = 0.1              # y accel noise variance
         self.damping = 1                  # percent of energy kept on bounce
-        self.r = 0.75                           # percent of energy kept on roll (restitution)
+        self.r = 0.9                           # percent of energy kept on roll (restitution)
         # self.x_pos = init_pos[0]
         # self.y_pos = init_pos[1]
         self.dt = dt
@@ -76,13 +76,14 @@ class Catcher():
     
     def predict(self, target, goal_y, boundaries):
         '''Update belief about individual target based on current observation.'''       
-        # if len(target.observations) < 3:
         if len(target.observations) < 0:
+        # if len(target.observations) < 0:
             pass
 
         # append current observation to list
-        # elif len(target.observations) == 3:
-        elif len(target.observations) <= 3:
+        elif len(target.observations) == 1:
+        # elif len(target.observations) <= 3:
+        # elif len(target.observations) == 1:
             # x initial state calculations
             # x0 = target.observations[0][0]
             # x1 = target.observations[1][0]
@@ -99,9 +100,10 @@ class Catcher():
             # vy2 = y1 - y2
             # ay2 = vy1 - vy2
 
-            x2, y2 = target.observations[0][0], target.observations[0][1]
-            vx2, vy2 = 0, -100
-            ay2 = 3000
+            x2, y2 = target.observations[-1][0], target.observations[-1][1]
+            vx2, vy2 = 0, 0
+            ay2 = 5000
+            # ay2=0
 
             # initial target belief
             target.kfx = np.array([x2,
@@ -118,7 +120,8 @@ class Catcher():
                                     [0, 0, 0, 0, self.y_acc_var]])
             
         # starting on 4th observation, use KF to predict
-        if len(target.observations) >= 3:
+        # if len(target.observations) >= 3:
+        else:
             # bounce off walls
             # if target.x > 100
 

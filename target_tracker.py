@@ -70,11 +70,22 @@ def servo_dot(servo_box_l, servo_box_r, color):
         x_center = int(x1 + np.linspace(0, 1, 100)[center_index] * (x2 - x1))
         y_center = int(y1 + np.linspace(0, 1, 100)[center_index] * (y2 - y1))
 
-        # Draw a circle at the center point
-        cv2.circle(image, (x_center, y_center), 10, color, -1)
         # print(f'x: {x_center}, y: {y_center}')
 
-        dot_x = x_center
+        # x distance from dot to center
+        dot_x_distance_to_center = x_center - (width / 2)
+        # normalize dist to center to max at 1
+        norm_dist_to_center = dot_x_distance_to_center / (width / 2)
+        # coefficient to adjust dot location by
+        dot_adj_coeff = 10
+        # adjustment
+        dot_adj = int(norm_dist_to_center * dot_adj_coeff)
+        # adjust dot x
+        dot_x_adjusted = x_center + dot_adj
+        # dot_x = x_center
+        dot_x = dot_x_adjusted
+        # Draw a circle at the center point
+        cv2.circle(image, (dot_x, y_center), 10, color, -1)
 
 # LED config
 LED_COUNT = 12
@@ -267,8 +278,11 @@ def choose_target(new_targets, trans_matrix):
                 x_goal_predict = after[0]
                 y_goal_predict = int((left_goal[1] + right_goal[1]) / 2)
                 current_target.goal_x = x_goal_predict
-            # draw circle
-            cv2.circle(image, (x_goal_predict, y_goal_predict), 5, (0, 0, 0), 5)
+            # draw circle after 3rd observation
+            if len(current_target.observations) > 2:
+                cv2.circle(image, (x_goal_predict, y_goal_predict), 5, colors[current_target.id % 5], 5)
+                cv2.circle(image, (x_goal_predict, y_goal_predict), 3, (255, 255, 255), 3)
+                cv2.circle(image, (x_goal_predict, y_goal_predict), 2, (0, 0, 0), 2)
 
             # set goal to x of last predicted point
             # current_target.goal_x = current_target.future_points[-1][0]
@@ -306,6 +320,16 @@ def servo_thread_fn():
                 go_to_position(goal_pos)
                 # delay
                 time.sleep(.05)
+                # # x distance from dot to center
+                # dot_x_distance_to_center = dot_x - (width / 2)
+                # # normalize dist to center to max at 1
+                # norm_dist_to_center = dot_x_distance_to_center / (width / 2)
+                # # coefficient to adjust dot location by
+                # dot_adj_coeff = 5
+                # # adjustment
+                # dot_adj = int(norm_dist_to_center * dot_adj_coeff)
+                # # adjust dot x
+                # dot_x_adj = dot_x + dot_adj
                 # record goal position for given dot_x
                 print(f'Adding {dot_x}: {goal_pos}')
                 lookup_dict[dot_x] = goal_pos
@@ -354,7 +378,7 @@ camera = PiCamera()
 camera.resolution = (width, height)
 camera.rotation = 90
 camera.framerate = framerate
-camera.shutter_speed = 4000
+camera.shutter_speed = 4500
 rawCapture = PiRGBArray(camera, size=(width, height))
 time.sleep(1)
 
@@ -455,7 +479,7 @@ try:
         # set goal color to match current target color
         goal_color = colors[current_target.id % 5] if current_target is not None else (0, 0, 0)
         # draw servo line
-        cv2.line(image, servo_box_r, servo_box_l, goal_color, 2)
+        cv2.line(image, servo_box_r, servo_box_l, (255, 255, 255), 2)
 
         # Use Hough Circle Transform to detect circles with parameters
         circles = cv2.HoughCircles(
@@ -580,32 +604,39 @@ try:
                 x, y = int(target.kfx[0].item()), int(target.kfx[1].item())
                 vx, vy = int(target.kfx[2].item()), int(target.kfx[3].item())
                 ay = int(target.kfx[3].item())
+                plus_size = 20
+                cv2.line(image, (x + plus_size, y), (x - plus_size, y), color, 2)
+                cv2.line(image, (x, y + plus_size), (x, y - plus_size), color, 2)
                 cv2.circle(image, (x, y), 5, color, 5)
+                cv2.circle(image, (x, y), 3, (255, 255, 255), 3)
+                cv2.circle(image, (x, y), 2, (0, 0, 0), 2)
                 # print(target.future_points)
                 # track previous point
                 prev_future_point = (int(target.kfx[0].item()), int(target.kfx[1].item()))
                 num_future_points = len(target.future_points)
-                # iterate over future points and draw them omitting first
-                for i, point in enumerate(target.future_points[1:]):
-                    next_future_point = (point[0], point[1])
-                    # set color for last point
-                    if i == num_future_points - 2:
-                        color = (255, 255, 255)
-                        rad = 5
-                    # elif i == num_future_points -3:
-                    #     color = (255, 0, 255)
-                    #     rad = 5
-                    else:
-                        rad = 1
-                    # draw a point at each future point
-                    cv2.circle(image, next_future_point, rad, color, 2)
-                    # draw a line from prev point
-                    print(f'{prev_future_point=}, {next_future_point=}')
-                    cv2.line(image, prev_future_point, next_future_point, color, 1)
-                    # update prev
-                    prev_future_point = next_future_point
-                # set catch_x as x value of predicted state belief before goal_y
-                target.catch_x = target.future_points[-1][0]
+                # wait until 3rd observation before drawing future points
+                if len(target.observations) > 2:
+                    # iterate over future points and draw them omitting first
+                    for i, point in enumerate(target.future_points[1:]):
+                        next_future_point = (point[0], point[1])
+                        # set color for last point
+                        # if i == num_future_points - 2:
+                        #     color = (255, 255, 255)
+                        #     rad = 2
+                        # # elif i == num_future_points -3:
+                        # #     color = (255, 0, 255)
+                        # #     rad = 5
+                        # else:
+                        #     rad = 1
+                        # draw a point at each future point
+                        # cv2.circle(image, next_future_point, rad, color, 2)
+                        # draw a line from prev point
+                        print(f'{prev_future_point=}, {next_future_point=}')
+                        cv2.line(image, prev_future_point, next_future_point, color, 2)
+                        # update prev
+                        prev_future_point = next_future_point
+                    # set catch_x as x value of predicted state belief before goal_y
+                    target.catch_x = target.future_points[-1][0]
 
         # choose best target
         current_target = choose_target(new_targets, trans_matrix)
