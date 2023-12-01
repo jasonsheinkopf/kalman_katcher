@@ -43,3 +43,7 @@ python -m venv kalman_venv
 source kalman_venv/bin/activate
 pip install -r requirements.txt
 ```
+## 4. Run the program
+```base
+python target_tracker.py
+```
